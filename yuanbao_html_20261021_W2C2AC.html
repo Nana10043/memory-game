@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>记忆翻牌 · Memory Match</title>
+<style>
+  :root{
+    --bg1:#eef2ff; --bg2:#fce7f3; --bg3:#e0f2fe;
+    --card-back:linear-gradient(135deg,#6366f1,#8b5cf6,#ec4899);
+    --glass:rgba(255,255,255,.65);
+    --line:rgba(0,0,0,.08);
+    --text:#1f2937;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; min-height:100vh; font-family:"Segoe UI",system-ui,-apple-system,sans-serif;
+    color:var(--text);
+    background:linear-gradient(120deg,var(--bg1),var(--bg2),var(--bg3));
+    background-size:300% 300%; animation:bgshift 18s ease infinite;
+    display:flex; flex-direction:column; align-items:center; padding:24px 12px 48px;
+  }
+  @keyframes bgshift{0%{background-position:0 50%}50%{background-position:100% 50%}100%{background-position:0 50%}}
+
+  h1{font-size:28px;margin:6px 0 2px;letter-spacing:1px}
+  .sub{opacity:.6;font-size:13px;margin-bottom:18px}
+
+  .panel{
+    width:min(920px,100%); background:var(--glass); backdrop-filter:blur(14px);
+    border:1px solid var(--line); border-radius:20px; padding:16px;
+    box-shadow:0 20px 50px rgba(0,0,0,.08);
+  }
+  .topbar{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:center;margin-bottom:14px}
+  .stats{display:flex;gap:10px;flex-wrap:wrap}
+  .chip{background:#fff;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600}
+  .chip b{color:#7c3aed}
+
+  .difficulty{display:flex;gap:8px;flex-wrap:wrap}
+  button{
+    cursor:pointer;border:none;border-radius:12px;padding:9px 14px;font-weight:700;font-size:14px;
+    background:#fff;color:#374151;border:1px solid var(--line);transition:.2s;
+  }
+  button:hover{transform:translateY(-1px)}
+  button.primary{background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;border:none}
+  button.active{outline:3px solid #c4b5fd}
+
+  .board{
+    display:grid;gap:12px;perspective:1000px;margin-top:6px;
+  }
+  .card{
+    aspect-ratio:1/1;position:relative;cursor:pointer;transform-style:preserve-3d;
+    transition:transform .45s cubic-bezier(.2,.8,.2,1);
+  }
+  .card.flipped,.card.matched{transform:rotateY(180deg)}
+  .face{
+    position:absolute;inset:0;backface-visibility:hidden;border-radius:16px;
+    display:flex;align-items:center;justify-content:center;font-size:34px;
+    box-shadow:0 10px 24px rgba(0,0,0,.12);
+  }
+  .front{background:#fff;border:1px solid var(--line)}
+  .back{background:var(--card-back);color:#fff;font-size:26px;transform:rotateY(180deg)}
+  .card.matched .front{animation:pop .5s ease;box-shadow:0 0 0 3px #34d399,0 10px 24px rgba(52,211,153,.35)}
+
+  @keyframes pop{0%{transform:scale(1)}40%{transform:scale(1.12)}100%{transform:scale(1)}}
+
+  .win{
+    margin-top:18px;text-align:center;font-size:18px;font-weight:800;color:#7c3aed;display:none;
+  }
+  .spark{
+    position:fixed;width:10px;height:10px;border-radius:50%;pointer-events:none;z-index:50;
+  }
+  @keyframes fly{to{transform:translate(var(--dx),var(--dy)) scale(.2);opacity:0}}
+</style>
+</head>
+<body>
+  <h1>🧠 记忆翻牌</h1>
+  <div class="sub">点两张牌，记住位置，配对全部清空就赢</div>
+
+  <div class="panel">
+    <div class="topbar">
+      <div class="stats">
+        <div class="chip">⏱ 时间 <b id="time">0s</b></div>
+        <div class="chip">👣 步数 <b id="moves">0</b></div>
+        <div class="chip">✅ 配对 <b id="pairs">0/0</b></div>
+        <div class="chip">🏆 最佳 <b id="best">--</b></div>
+      </div>
+      <div class="difficulty">
+        <button data-d="easy" class="active">简单 4×3</button>
+        <button data-d="normal">普通 4×4</button>
+        <button data-d="hard">困难 6×4</button>
+        <button class="primary" id="restart">🔄 重开</button>
+      </div>
+    </div>
+
+    <div class="board" id="board"></div>
+    <div class="win" id="win">🎉 完成！记忆力不错啊</div>
+  </div>
+
+<script>
+const EMOJI = ['🍓','🐶','🚀','🌈','🎮','🎲','🎵','🦄','🍔','⚽','🌙','🔥','🧩','🍩','🐱','🪐','🎯','🦊','🍕','🌸','🐼','⚡','🎨','🧠'];
+
+const board = document.getElementById('board');
+const timeEl = document.getElementById('time');
+const movesEl = document.getElementById('moves');
+const pairsEl = document.getElementById('pairs');
+const bestEl = document.getElementById('best');
+const winEl = document.getElementById('win');
+
+let diff = 'easy';
+let cards = [], first = null, lock = false, moves = 0, matched = 0, totalPairs = 0;
+let timer = null, seconds = 0, started = false;
+
+const config = {
+  easy:   {cols:4, rows:3},
+  normal: {cols:4, rows:4},
+  hard:   {cols:6, rows:4},
+};
+
+function shuffle(a){
+  for(let i=a.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [a[i],a[j]]=[a[j],a[i]];
+  }
+  return a;
+}
+
+function loadBest(){
+  const v = localStorage.getItem('memory_best_'+diff);
+  bestEl.textContent = v ? v+'s' : '--';
+}
+
+function startTimer(){
+  if(started) return;
+  started = true;
+  timer = setInterval(()=>{
+    seconds++;
+    timeEl.textContent = seconds+'s';
+  },1000);
+}
+
+function stopTimer(){ clearInterval(timer); }
+
+function sparkle(x,y){
+  const colors=['#f472b6','#a78bfa','#34d399','#facc15','#38bdf8'];
+  for(let i=0;i<12;i++){
+    const s=document.createElement('div');
+    s.className='spark';
+    s.style.left=x+'px'; s.style.top=y+'px';
+    s.style.background=colors[i%colors.length];
+    const dx=(Math.random()*160-80)+'px';
+    const dy=(Math.random()*160-80)+'px';
+    s.style.setProperty('--dx',dx);
+    s.style.setProperty('--dy',dy);
+    s.style.animation=`fly ${500+Math.random()*300}ms ease forwards`;
+    document.body.appendChild(s);
+    setTimeout(()=>s.remove(),900);
+  }
+}
+
+function build(){
+  stopTimer();
+  board.innerHTML='';
+  winEl.style.display='none';
+  first=null; lock=false; moves=0; matched=0; seconds=0; started=false;
+  timeEl.textContent='0s'; movesEl.textContent='0';
+  loadBest();
+
+  const {cols,rows}=config[diff];
+  totalPairs = (cols*rows)/2;
+  pairsEl.textContent = `0/${totalPairs}`;
+
+  const picks = shuffle(EMOJI.slice()).slice(0,totalPairs);
+  const deck = shuffle([...picks,...picks]);
+
+  board.style.gridTemplateColumns = `repeat(${cols},1fr)`;
+
+  deck.forEach(sym=>{
+    const card=document.createElement('div');
+    card.className='card';
+    card.dataset.sym=sym;
+    card.innerHTML=`
+      <div class="face back">❓</div>
+      <div class="face front">${sym}</div>`;
+    card.addEventListener('click',()=>flip(card));
+    board.appendChild(card);
+  });
+}
+
+function flip(card){
+  if(lock) return;
+  if(card.classList.contains('flipped')||card.classList.contains('matched')) return;
+  startTimer();
+  card.classList.add('flipped');
+
+  if(!first){
+    first=card;
+    return;
+  }
+
+  // 第二张
+  moves++;
+  movesEl.textContent=moves;
+  lock=true;
+
+  if(first.dataset.sym===card.dataset.sym){
+    first.classList.add('matched');
+    card.classList.add('matched');
+    matched++;
+    pairsEl.textContent=`${matched}/${totalPairs}`;
+    const r=card.getBoundingClientRect();
+    sparkle(r.left+r.width/2,r.top+r.height/2);
+    first=null; lock=false;
+
+    if(matched===totalPairs){
+      stopTimer();
+      winEl.style.display='block';
+      const prev=localStorage.getItem('memory_best_'+diff);
+      if(!prev || seconds<+prev){
+        localStorage.setItem('memory_best_'+diff,seconds);
+      }
+      loadBest();
+    }
+  }else{
+    const a=first,c=card;
+    setTimeout(()=>{
+      a.classList.remove('flipped');
+      c.classList.remove('flipped');
+      first=null; lock=false;
+    },750);
+  }
+}
+
+document.querySelectorAll('.difficulty button[data-d]').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('.difficulty button[data-d]').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    diff=b.dataset.d;
+    build();
+  });
+});
+
+document.getElementById('restart').addEventListener('click',build);
+
+build();
+</script>
+</body>
+</html>
